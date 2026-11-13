@@ -1,0 +1,6 @@
+{
+  "name": "BloomCycle",
+  "description": "Privacy-first, local-only menstrual wellness and personal cycle analytics Android app.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
