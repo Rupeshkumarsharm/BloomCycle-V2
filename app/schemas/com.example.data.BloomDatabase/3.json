@@ -1,0 +1,404 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 3,
+    "identityHash": "32684155058ca110b8f95ce689977c5e",
+    "entities": [
+      {
+        "tableName": "user_profile",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `dob` TEXT NOT NULL, `relationshipStatus` TEXT NOT NULL, `customRelationshipLabel` TEXT NOT NULL, `defaultCycleLength` INTEGER NOT NULL, `createdAtMillis` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dob",
+            "columnName": "dob",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relationshipStatus",
+            "columnName": "relationshipStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customRelationshipLabel",
+            "columnName": "customRelationshipLabel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "defaultCycleLength",
+            "columnName": "defaultCycleLength",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "daily_entries",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`date` TEXT NOT NULL, `isPeriod` INTEGER NOT NULL, `flowLevel` TEXT NOT NULL, `spotting` INTEGER NOT NULL, `isPeriodStartOverride` INTEGER NOT NULL, `isPeriodEndOverride` INTEGER NOT NULL, `flowChangesNote` TEXT NOT NULL, `crampScore` INTEGER NOT NULL, `painTiming` TEXT NOT NULL, `moods` TEXT NOT NULL, `moodSwingLevel` TEXT NOT NULL, `symptoms` TEXT NOT NULL, `symptomTiming` TEXT NOT NULL, `sleepDurationHours` REAL, `sleepQuality` INTEGER, `sleepTimingNote` TEXT NOT NULL, `energyLevel` INTEGER, `stressLevel` INTEGER, `stressTriggers` TEXT NOT NULL, `activityLevel` TEXT NOT NULL, `exerciseMinutes` INTEGER, `waterCups` INTEGER, `caffeineCups` INTEGER, `medicationTaken` INTEGER NOT NULL, `medicationNote` TEXT NOT NULL, `customTags` TEXT NOT NULL, `notes` TEXT NOT NULL, `updatedAtMillis` INTEGER NOT NULL, PRIMARY KEY(`date`))",
+        "fields": [
+          {
+            "fieldPath": "date",
+            "columnName": "date",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isPeriod",
+            "columnName": "isPeriod",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "flowLevel",
+            "columnName": "flowLevel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "spotting",
+            "columnName": "spotting",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isPeriodStartOverride",
+            "columnName": "isPeriodStartOverride",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isPeriodEndOverride",
+            "columnName": "isPeriodEndOverride",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "flowChangesNote",
+            "columnName": "flowChangesNote",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "crampScore",
+            "columnName": "crampScore",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "painTiming",
+            "columnName": "painTiming",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "moods",
+            "columnName": "moods",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "moodSwingLevel",
+            "columnName": "moodSwingLevel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "symptoms",
+            "columnName": "symptoms",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "symptomTiming",
+            "columnName": "symptomTiming",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sleepDurationHours",
+            "columnName": "sleepDurationHours",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "sleepQuality",
+            "columnName": "sleepQuality",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "sleepTimingNote",
+            "columnName": "sleepTimingNote",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "energyLevel",
+            "columnName": "energyLevel",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "stressLevel",
+            "columnName": "stressLevel",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "stressTriggers",
+            "columnName": "stressTriggers",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "activityLevel",
+            "columnName": "activityLevel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "exerciseMinutes",
+            "columnName": "exerciseMinutes",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "waterCups",
+            "columnName": "waterCups",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "caffeineCups",
+            "columnName": "caffeineCups",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "medicationTaken",
+            "columnName": "medicationTaken",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "medicationNote",
+            "columnName": "medicationNote",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customTags",
+            "columnName": "customTags",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtMillis",
+            "columnName": "updatedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "date"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_daily_entries_isPeriod",
+            "unique": false,
+            "columnNames": [
+              "isPeriod"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_daily_entries_isPeriod` ON `${TABLE_NAME}` (`isPeriod`)"
+          }
+        ]
+      },
+      {
+        "tableName": "cycles",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`cycleIndex` INTEGER NOT NULL, `startDate` TEXT NOT NULL, `endDate` TEXT NOT NULL, `periodDurationDays` INTEGER NOT NULL, `cycleLengthDays` INTEGER, `averageCrampScore` REAL NOT NULL, `maxCrampScore` INTEGER NOT NULL, `totalSymptomLogs` INTEGER NOT NULL, `associatedSymptoms` TEXT NOT NULL, `symptomCounts` TEXT NOT NULL, `moodCounts` TEXT NOT NULL, `dominantMood` TEXT, `userAgeAtStart` INTEGER NOT NULL, `updatedAtMillis` INTEGER NOT NULL, PRIMARY KEY(`cycleIndex`))",
+        "fields": [
+          {
+            "fieldPath": "cycleIndex",
+            "columnName": "cycleIndex",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startDate",
+            "columnName": "startDate",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endDate",
+            "columnName": "endDate",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "periodDurationDays",
+            "columnName": "periodDurationDays",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cycleLengthDays",
+            "columnName": "cycleLengthDays",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "averageCrampScore",
+            "columnName": "averageCrampScore",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxCrampScore",
+            "columnName": "maxCrampScore",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalSymptomLogs",
+            "columnName": "totalSymptomLogs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "associatedSymptoms",
+            "columnName": "associatedSymptoms",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "symptomCounts",
+            "columnName": "symptomCounts",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "moodCounts",
+            "columnName": "moodCounts",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dominantMood",
+            "columnName": "dominantMood",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "userAgeAtStart",
+            "columnName": "userAgeAtStart",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtMillis",
+            "columnName": "updatedAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "cycleIndex"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_cycles_startDate",
+            "unique": true,
+            "columnNames": [
+              "startDate"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_cycles_startDate` ON `${TABLE_NAME}` (`startDate`)"
+          }
+        ]
+      },
+      {
+        "tableName": "custom_options",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `type` TEXT NOT NULL, `label` TEXT NOT NULL COLLATE NOCASE, `createdAtMillis` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMillis",
+            "columnName": "createdAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_custom_options_type_label",
+            "unique": true,
+            "columnNames": [
+              "type",
+              "label"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_custom_options_type_label` ON `${TABLE_NAME}` (`type`, `label`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '32684155058ca110b8f95ce689977c5e')"
+    ]
+  }
+}

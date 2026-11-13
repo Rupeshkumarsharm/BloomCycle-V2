@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -33,7 +34,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -42,16 +42,20 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.domain.model.ActivityLevel
 import com.example.domain.model.CustomOption
@@ -63,6 +67,35 @@ import com.example.domain.model.MoodSwingLevel
 import com.example.domain.model.TimingSlot
 import com.example.util.CycleDate
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
+
+private const val TEXT_SAVE_DEBOUNCE_MS = 400L
+private const val MAX_EXERCISE_MINUTES_PER_DAY = 1440
+
+private fun DailyEntry.normalizedForComparison(): DailyEntry = copy(updatedAtMillis = 0L)
+
+@Stable
+private class EditorDraftHolder(
+  val date: CycleDate,
+  initialEntry: DailyEntry,
+  initialExternalNormalized: DailyEntry?
+) {
+  var draft by mutableStateOf(initialEntry)
+  var exerciseMinutesText by mutableStateOf(initialEntry.exerciseMinutes?.toString().orEmpty())
+  var exerciseMinutesError by mutableStateOf<String?>(null)
+  var hasPendingTextWrite by mutableStateOf(false)
+  var textRevision by mutableStateOf(0)
+  val inFlightSaves = ArrayDeque<DailyEntry>()
+  var lastSyncedExternal: DailyEntry? = initialExternalNormalized
+
+  fun dispatchSave(stamped: DailyEntry, onSave: (DailyEntry) -> Unit) {
+    inFlightSaves.addLast(stamped.normalizedForComparison())
+    while (inFlightSaves.size > 20) {
+      inFlightSaves.removeFirst()
+    }
+    onSave(stamped)
+  }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -75,25 +108,94 @@ fun DailyLogEditor(
   onAddCustomOption: (CustomOptionType, String) -> Unit,
   modifier: Modifier = Modifier
 ) {
-  var draft by remember(date, existingEntry?.updatedAtMillis) {
-    mutableStateOf(existingEntry ?: DailyEntry(date = date))
+  val currentOnSave by rememberUpdatedState(onSaveEntry)
+  val holder = remember(date) {
+    EditorDraftHolder(
+      date = date,
+      initialEntry = existingEntry ?: DailyEntry(date = date),
+      initialExternalNormalized = existingEntry?.normalizedForComparison()
+    )
   }
+  val draft = holder.draft
   var showMoreDetails by remember(date) { mutableStateOf(false) }
   var addOptionDialogType by remember { mutableStateOf<CustomOptionType?>(null) }
 
-  // Sync when switching to a date whose DB record loaded/changed externally
+  // Sync only genuine external DB changes; never clobber active drafts or Room echoes of our own writes.
   LaunchedEffect(date, existingEntry) {
-    if (existingEntry != null && existingEntry.updatedAtMillis != draft.updatedAtMillis) {
-      draft = existingEntry
-    } else if (existingEntry == null && draft.date != date) {
-      draft = DailyEntry(date = date)
+    val existingNorm = existingEntry?.normalizedForComparison()
+    val draftNorm = holder.draft.normalizedForComparison()
+
+    if (existingNorm == draftNorm || (existingNorm == null && !holder.draft.hasAnyDetails)) {
+      holder.lastSyncedExternal = existingNorm
+      if (existingNorm != null) {
+        while (holder.inFlightSaves.isNotEmpty()) {
+          val head = holder.inFlightSaves.removeFirst()
+          if (head == existingNorm) break
+        }
+      } else {
+        holder.inFlightSaves.clear()
+      }
+      return@LaunchedEffect
+    }
+
+    if (holder.hasPendingTextWrite) {
+      return@LaunchedEffect
+    }
+
+    if (existingNorm != null && existingNorm in holder.inFlightSaves) {
+      while (holder.inFlightSaves.isNotEmpty()) {
+        val head = holder.inFlightSaves.removeFirst()
+        if (head == existingNorm) break
+      }
+      holder.lastSyncedExternal = existingNorm
+      return@LaunchedEffect
+    }
+
+    if (existingNorm != holder.lastSyncedExternal) {
+      val nextEntry = existingEntry ?: DailyEntry(date = date)
+      holder.draft = nextEntry
+      holder.exerciseMinutesText = nextEntry.exerciseMinutes?.toString().orEmpty()
+      holder.exerciseMinutesError = null
+      holder.lastSyncedExternal = existingNorm
+    }
+  }
+
+  // Debounce free-text edits so rapid typing does not trigger concurrent saves or cursor jumps.
+  LaunchedEffect(holder, holder.textRevision) {
+    if (holder.hasPendingTextWrite) {
+      delay(TEXT_SAVE_DEBOUNCE_MS)
+      if (holder.hasPendingTextWrite) {
+        val stamped = holder.draft.copy(updatedAtMillis = System.currentTimeMillis())
+        holder.draft = stamped
+        holder.hasPendingTextWrite = false
+        holder.dispatchSave(stamped, currentOnSave)
+      }
+    }
+  }
+
+  // Flush any pending text write for this exact date when switching dates or leaving the editor.
+  DisposableEffect(holder) {
+    onDispose {
+      if (holder.hasPendingTextWrite) {
+        val stamped = holder.draft.copy(updatedAtMillis = System.currentTimeMillis())
+        holder.draft = stamped
+        holder.hasPendingTextWrite = false
+        holder.dispatchSave(stamped, currentOnSave)
+      }
     }
   }
 
   fun commit(updated: DailyEntry) {
     val stamped = updated.copy(updatedAtMillis = System.currentTimeMillis())
-    draft = stamped
-    onSaveEntry(stamped)
+    holder.draft = stamped
+    holder.hasPendingTextWrite = false
+    holder.dispatchSave(stamped, currentOnSave)
+  }
+
+  fun scheduleTextUpdate(updated: DailyEntry) {
+    holder.draft = updated
+    holder.hasPendingTextWrite = true
+    holder.textRevision++
   }
 
   val customMoods = remember(customOptions) {
@@ -414,9 +516,9 @@ fun DailyLogEditor(
             value = sleepVal,
             onValueChange = { raw ->
               val snapped = (raw * 2f).roundToInt() / 2f
-              draft = draft.copy(sleepDurationHours = snapped)
+              holder.draft = holder.draft.copy(sleepDurationHours = snapped)
             },
-            onValueChangeFinished = { commit(draft) },
+            onValueChangeFinished = { commit(holder.draft) },
             valueRange = 2f..12f
           )
 
@@ -435,10 +537,7 @@ fun DailyLogEditor(
           Spacer(modifier = Modifier.height(8.dp))
           OutlinedTextField(
             value = draft.sleepTimingNote,
-            onValueChange = {
-              draft = draft.copy(sleepTimingNote = it)
-              onSaveEntry(draft)
-            },
+            onValueChange = { scheduleTextUpdate(draft.copy(sleepTimingNote = it)) },
             label = { Text("Sleep timing (e.g., 11 PM – 7 AM)") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
@@ -472,10 +571,7 @@ fun DailyLogEditor(
           Spacer(modifier = Modifier.height(8.dp))
           OutlinedTextField(
             value = draft.stressTriggers,
-            onValueChange = {
-              draft = draft.copy(stressTriggers = it)
-              onSaveEntry(draft)
-            },
+            onValueChange = { scheduleTextUpdate(draft.copy(stressTriggers = it)) },
             label = { Text("Stress triggers (optional)") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
@@ -497,14 +593,33 @@ fun DailyLogEditor(
           }
           Spacer(modifier = Modifier.height(8.dp))
           OutlinedTextField(
-            value = draft.exerciseMinutes?.toString().orEmpty(),
+            value = holder.exerciseMinutesText,
             onValueChange = { raw ->
-              val mins = raw.filter { it.isDigit() }.toIntOrNull()
-              draft = draft.copy(exerciseMinutes = mins)
-              onSaveEntry(draft)
+              val digitsOnly = raw.filter { it.isDigit() }.take(5)
+              if (digitsOnly == holder.exerciseMinutesText && raw != digitsOnly) {
+                return@OutlinedTextField
+              }
+              holder.exerciseMinutesText = digitsOnly
+              if (digitsOnly.isEmpty()) {
+                holder.exerciseMinutesError = null
+                scheduleTextUpdate(draft.copy(exerciseMinutes = null))
+              } else {
+                val parsed = digitsOnly.toIntOrNull()
+                if (parsed != null && parsed in 0..MAX_EXERCISE_MINUTES_PER_DAY) {
+                  holder.exerciseMinutesError = null
+                  scheduleTextUpdate(draft.copy(exerciseMinutes = parsed))
+                } else {
+                  holder.exerciseMinutesError = "Enter 0 to $MAX_EXERCISE_MINUTES_PER_DAY minutes (24 hours max)"
+                }
+              }
             },
             label = { Text("Exercise duration (minutes)") },
-            modifier = Modifier.fillMaxWidth(),
+            isError = holder.exerciseMinutesError != null,
+            supportingText = holder.exerciseMinutesError?.let { err -> { Text(err) } },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("exercise_minutes_input"),
             singleLine = true
           )
 
@@ -614,10 +729,7 @@ fun DailyLogEditor(
 
           OutlinedTextField(
             value = draft.flowChangesNote,
-            onValueChange = {
-              draft = draft.copy(flowChangesNote = it)
-              onSaveEntry(draft)
-            },
+            onValueChange = { scheduleTextUpdate(draft.copy(flowChangesNote = it)) },
             label = { Text("Flow changes note (optional)") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
@@ -649,10 +761,7 @@ fun DailyLogEditor(
             Spacer(modifier = Modifier.height(6.dp))
             OutlinedTextField(
               value = draft.medicationNote,
-              onValueChange = {
-                draft = draft.copy(medicationNote = it)
-                onSaveEntry(draft)
-              },
+              onValueChange = { scheduleTextUpdate(draft.copy(medicationNote = it)) },
               label = { Text("Medication / relief logged") },
               modifier = Modifier.fillMaxWidth(),
               singleLine = true
@@ -699,10 +808,7 @@ fun DailyLogEditor(
       Spacer(modifier = Modifier.height(8.dp))
       OutlinedTextField(
         value = draft.notes,
-        onValueChange = {
-          draft = draft.copy(notes = it)
-          onSaveEntry(draft)
-        },
+        onValueChange = { scheduleTextUpdate(draft.copy(notes = it)) },
         placeholder = { Text("Anything you'd like to remember about today...") },
         modifier = Modifier
           .fillMaxWidth()

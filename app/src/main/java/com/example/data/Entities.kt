@@ -202,10 +202,14 @@ data class CycleEntity(
   }
 }
 
-@Entity(tableName = "custom_options")
+@Entity(
+  tableName = "custom_options",
+  indices = [Index(value = ["type", "label"], unique = true)]
+)
 data class CustomOptionEntity(
   @PrimaryKey(autoGenerate = true) val id: Long = 0,
   val type: CustomOptionType,
+  @androidx.room.ColumnInfo(collate = androidx.room.ColumnInfo.NOCASE)
   val label: String,
   val createdAtMillis: Long
 ) {

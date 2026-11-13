@@ -94,10 +94,10 @@ interface CustomOptionDao {
   @Query("SELECT * FROM custom_options ORDER BY createdAtMillis ASC")
   suspend fun getAllOptionsOnce(): List<CustomOptionEntity>
 
-  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  @Insert(onConflict = OnConflictStrategy.IGNORE)
   suspend fun insertOption(option: CustomOptionEntity)
 
-  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  @Insert(onConflict = OnConflictStrategy.IGNORE)
   suspend fun insertOptions(options: List<CustomOptionEntity>)
 
   @Query("DELETE FROM custom_options WHERE id = :id")

@@ -13,14 +13,20 @@ import com.example.domain.model.TimingSlot
 import com.example.domain.model.UserProfile
 import com.example.util.CycleDate
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
+import java.io.FilterInputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.zip.ZipEntry
+import java.util.zip.ZipException
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
+import javax.xml.parsers.ParserConfigurationException
 import org.w3c.dom.Document
 import org.w3c.dom.Element
+import org.xml.sax.SAXException
 
 data class ParsedWorkbookPreview(
   val profile: UserProfile?,
@@ -36,6 +42,13 @@ data class ParsedWorkbookPreview(
  * and parses both inlineStr/str and sharedStrings.xml workbooks during restore.
  */
 object ExcelXlsxEngine {
+
+  internal const val MAX_COMPRESSED_BYTES: Long = 10L * 1024 * 1024 // 10 MB
+  internal const val MAX_TOTAL_UNCOMPRESSED_BYTES: Long = 20L * 1024 * 1024 // 20 MB
+  internal const val MAX_SINGLE_ENTRY_BYTES: Long = 8L * 1024 * 1024 // 8 MB
+  internal const val MAX_ZIP_ENTRIES: Int = 250
+
+  private val canonicalNonNegativeNumberRegex = Regex("""(?:0|[1-9]\d*)(?:\.\d+)?""")
 
   private val dailyHeaders = listOf(
     "Date",
@@ -91,6 +104,7 @@ object ExcelXlsxEngine {
     val entryRows = buildList {
       add(dailyHeaders)
       entries.sortedBy { it.date }.forEach { e ->
+        val safeSleep = e.sleepDurationHours?.takeIf { it.isFinite() }?.toString() ?: ""
         add(
           listOf(
             e.date.toIsoString(),
@@ -106,7 +120,7 @@ object ExcelXlsxEngine {
             e.moodSwingLevel.name,
             e.symptoms.joinToString("; "),
             e.symptomTiming.name,
-            e.sleepDurationHours?.toString() ?: "",
+            safeSleep,
             e.sleepQuality?.toString() ?: "",
             e.sleepTimingNote,
             e.energyLevel?.toString() ?: "",
@@ -141,6 +155,10 @@ object ExcelXlsxEngine {
         )
       )
       snapshot.cycles.forEach { c ->
+        val avgCrampFormatted = c.averageCrampScore
+          .takeIf { it.isFinite() }
+          ?.let { String.format(java.util.Locale.US, "%.2f", it) }
+          ?: "0.00"
         add(
           listOf(
             c.cycleIndex.toString(),
@@ -148,7 +166,7 @@ object ExcelXlsxEngine {
             c.endDate.toIsoString(),
             c.periodDurationDays.toString(),
             c.cycleLengthDays?.toString() ?: "Ongoing",
-            String.format(java.util.Locale.US, "%.2f", c.averageCrampScore),
+            avgCrampFormatted,
             c.maxCrampScore.toString(),
             c.totalSymptomLogs.toString(),
             c.dominantMood ?: "",
@@ -160,13 +178,13 @@ object ExcelXlsxEngine {
 
     val insightRows = buildList {
       add(listOf("Category", "Title", "Observation"))
-      snapshot.averageCycleLength?.let {
+      snapshot.averageCycleLength?.takeIf { it.isFinite() }?.let {
         add(listOf("Metric", "Average Cycle Length", "${String.format(java.util.Locale.US, "%.1f", it)} days"))
       }
-      snapshot.medianCycleLength?.let {
+      snapshot.medianCycleLength?.takeIf { it.isFinite() }?.let {
         add(listOf("Metric", "Median Cycle Length", "${String.format(java.util.Locale.US, "%.1f", it)} days"))
       }
-      snapshot.averagePeriodDuration?.let {
+      snapshot.averagePeriodDuration?.takeIf { it.isFinite() }?.let {
         add(listOf("Metric", "Average Period Duration", "${String.format(java.util.Locale.US, "%.1f", it)} days"))
       }
       snapshot.prediction?.let {
@@ -204,21 +222,59 @@ object ExcelXlsxEngine {
 
   fun parseWorkbook(inputStream: InputStream): ParsedWorkbookPreview {
     val files = mutableMapOf<String, ByteArray>()
-    ZipInputStream(inputStream).use { zip ->
-      var entry = zip.nextEntry
-      while (entry != null) {
-        if (!entry.isDirectory) {
-          val buffer = ByteArrayOutputStream()
-          zip.copyTo(buffer)
-          files[entry.name] = buffer.toByteArray()
+    val boundedInput = BoundedInputStream(inputStream, MAX_COMPRESSED_BYTES)
+
+    try {
+      ZipInputStream(boundedInput).use { zip ->
+        var entryCount = 0
+        var totalUncompressed = 0L
+        val chunk = ByteArray(8192)
+        var entry: ZipEntry? = zip.nextEntry
+        while (entry != null) {
+          entryCount++
+          if (entryCount > MAX_ZIP_ENTRIES) {
+            throw IllegalArgumentException("Workbook contains too many archive entries (max $MAX_ZIP_ENTRIES).")
+          }
+          val normalizedPath = normalizeZipEntryPath(entry.name)
+          if (!entry.isDirectory) {
+            if (entry.size > MAX_SINGLE_ENTRY_BYTES) {
+              throw IllegalArgumentException("Workbook entry '$normalizedPath' exceeds maximum allowed size.")
+            }
+            if (files.containsKey(normalizedPath)) {
+              throw IllegalArgumentException("Malformed workbook: duplicate archive entry '$normalizedPath'.")
+            }
+            val buffer = ByteArrayOutputStream()
+            var entryBytes = 0L
+            while (true) {
+              val read = zip.read(chunk)
+              if (read <= 0) break
+              entryBytes += read
+              if (entryBytes > MAX_SINGLE_ENTRY_BYTES) {
+                throw IllegalArgumentException("Workbook entry '$normalizedPath' exceeds maximum allowed size.")
+              }
+              totalUncompressed += read
+              if (totalUncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES) {
+                throw IllegalArgumentException("Workbook exceeds maximum allowed uncompressed size.")
+              }
+              buffer.write(chunk, 0, read)
+            }
+            files[normalizedPath] = buffer.toByteArray()
+          }
+          zip.closeEntry()
+          entry = zip.nextEntry
         }
-        zip.closeEntry()
-        entry = zip.nextEntry
       }
+    } catch (e: ZipException) {
+      throw IllegalArgumentException("Selected file is not a valid .xlsx workbook.", e)
+    } catch (e: EOFException) {
+      throw IllegalArgumentException("Selected .xlsx workbook appears truncated or corrupted.", e)
     }
 
     if (files.isEmpty()) {
       throw IllegalArgumentException("Selected file is not a valid .xlsx workbook.")
+    }
+    if (!files.containsKey("xl/workbook.xml")) {
+      throw IllegalArgumentException("Malformed .xlsx workbook: missing xl/workbook.xml.")
     }
 
     val sharedStrings = files["xl/sharedStrings.xml"]?.let { parseSharedStrings(it) } ?: emptyList()
@@ -268,6 +324,49 @@ object ExcelXlsxEngine {
     )
   }
 
+  private class BoundedInputStream(
+    delegate: InputStream,
+    private val maxBytes: Long
+  ) : FilterInputStream(delegate) {
+    private var bytesRead = 0L
+
+    override fun read(): Int {
+      val b = super.read()
+      if (b != -1) {
+        bytesRead++
+        if (bytesRead > maxBytes) {
+          throw IllegalArgumentException("Workbook archive exceeds maximum allowed compressed size.")
+        }
+      }
+      return b
+    }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+      val count = super.read(b, off, len)
+      if (count > 0) {
+        bytesRead += count
+        if (bytesRead > maxBytes) {
+          throw IllegalArgumentException("Workbook archive exceeds maximum allowed compressed size.")
+        }
+      }
+      return count
+    }
+  }
+
+  private fun normalizeZipEntryPath(rawName: String): String {
+    if (rawName.isBlank() || rawName.indexOf('\u0000') >= 0 || rawName.contains('\\') || rawName.contains(':')) {
+      throw IllegalArgumentException("Unsafe archive entry path.")
+    }
+    if (rawName.startsWith("/")) {
+      throw IllegalArgumentException("Absolute archive entry path is not allowed.")
+    }
+    val segments = rawName.split('/').filter { it.isNotEmpty() && it != "." }
+    if (segments.isEmpty() || segments.any { it == ".." }) {
+      throw IllegalArgumentException("Invalid archive entry path traversal: '$rawName'.")
+    }
+    return segments.joinToString("/")
+  }
+
   private fun parseDailyEntryRows(rows: List<List<String>>): List<DailyEntry> {
     if (rows.size <= 1) return emptyList()
     val header = rows.first().map { it.trim() }
@@ -288,7 +387,18 @@ object ExcelXlsxEngine {
       }
 
       fun splitMulti(value: String): List<String> =
-        value.split(";", ",").map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        value.split(";").map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
+      val rawSleep = row.col("SleepHours", 13)
+      val parsedSleep = if (rawSleep.isBlank()) {
+        null
+      } else {
+        val f = rawSleep.toFloatOrNull()
+        if (f != null && !f.isFinite()) {
+          throw IllegalArgumentException("Invalid non-finite SleepHours value: '$rawSleep'")
+        }
+        f?.coerceIn(0f, 24f)
+      }
 
       DailyEntry(
         date = date,
@@ -304,16 +414,16 @@ object ExcelXlsxEngine {
         moodSwingLevel = MoodSwingLevel.fromNameOrNull(row.col("MoodSwings", 10)) ?: MoodSwingLevel.NONE,
         symptoms = splitMulti(row.col("Symptoms", 11)),
         symptomTiming = TimingSlot.fromNameOrNull(row.col("SymptomTiming", 12)) ?: TimingSlot.ANY,
-        sleepDurationHours = row.col("SleepHours", 13).toFloatOrNull(),
+        sleepDurationHours = parsedSleep,
         sleepQuality = row.col("SleepQuality_1_5", 14).toIntOrNull()?.coerceIn(1, 5),
         sleepTimingNote = row.col("SleepTiming", 15),
         energyLevel = row.col("Energy_0_5", 16).toIntOrNull()?.coerceIn(0, 5),
         stressLevel = row.col("Stress_0_5", 17).toIntOrNull()?.coerceIn(0, 5),
         stressTriggers = row.col("StressTriggers", 18),
         activityLevel = ActivityLevel.fromNameOrNull(row.col("ActivityLevel", 19)) ?: ActivityLevel.NONE,
-        exerciseMinutes = row.col("ExerciseMinutes", 20).toIntOrNull(),
-        waterCups = row.col("WaterCups", 21).toIntOrNull(),
-        caffeineCups = row.col("CaffeineCups", 22).toIntOrNull(),
+        exerciseMinutes = row.col("ExerciseMinutes", 20).toIntOrNull()?.coerceIn(0, 1440),
+        waterCups = row.col("WaterCups", 21).toIntOrNull()?.coerceIn(0, 100),
+        caffeineCups = row.col("CaffeineCups", 22).toIntOrNull()?.coerceIn(0, 100),
         medicationTaken = yes("MedicationTaken", 23),
         medicationNote = row.col("MedicationNote", 24),
         customTags = splitMulti(row.col("CustomTags", 25)),
@@ -354,12 +464,16 @@ object ExcelXlsxEngine {
       val relNodes = doc.getElementsByTagName("*")
       for (i in 0 until relNodes.length) {
         val el = relNodes.item(i) as? Element ?: continue
-        if (el.tagName.endsWith("Relationship")) {
+        if (el.tagName.substringAfterLast(':') == "Relationship") {
+          val mode = el.getAttribute("TargetMode")
+          if (mode.equals("External", ignoreCase = true)) {
+            throw IllegalArgumentException("External workbook relationships are not allowed.")
+          }
           val id = el.getAttribute("Id")
-          val target = el.getAttribute("Target")
+          val target = el.getAttribute("Target").trim()
           if (id.isNotBlank() && target.isNotBlank()) {
-            val normalized = if (target.startsWith("/")) target.drop(1) else "xl/$target"
-            relMap[id] = normalized.replace("xl/xl/", "xl/")
+            val resolved = resolveWorkbookTarget(target)
+            relMap[id] = resolved
           }
         }
       }
@@ -390,6 +504,31 @@ object ExcelXlsxEngine {
     return result
   }
 
+  private fun resolveWorkbookTarget(target: String): String {
+    if (target.indexOf('\u0000') >= 0 || target.contains('\\') || target.contains(':')) {
+      throw IllegalArgumentException("Unsafe relationship target path: '$target'.")
+    }
+    val raw = if (target.startsWith("/")) {
+      target.drop(1)
+    } else if (target.startsWith("xl/")) {
+      target
+    } else {
+      "xl/$target"
+    }
+    val segments = mutableListOf<String>()
+    for (seg in raw.split('/')) {
+      when (seg) {
+        "", "." -> Unit
+        ".." -> throw IllegalArgumentException("Path traversal in relationship target: '$target'.")
+        else -> segments.add(seg)
+      }
+    }
+    if (segments.isEmpty()) {
+      throw IllegalArgumentException("Empty relationship target path.")
+    }
+    return segments.joinToString("/")
+  }
+
   private fun parseSharedStrings(bytes: ByteArray): List<String> {
     val strings = mutableListOf<String>()
     val doc = parseXmlDocument(bytes)
@@ -397,18 +536,35 @@ object ExcelXlsxEngine {
     for (i in 0 until siNodes.length) {
       val el = siNodes.item(i) as? Element ?: continue
       if (el.tagName.substringAfterLast(':') == "si") {
-        val sb = StringBuilder()
-        val children = el.getElementsByTagName("*")
-        for (j in 0 until children.length) {
-          val child = children.item(j) as? Element ?: continue
-          if (child.tagName.substringAfterLast(':') == "t") {
-            sb.append(child.textContent.orEmpty())
-          }
-        }
-        strings.add(sb.toString())
+        strings.add(extractRichTextContent(el))
       }
     }
     return strings
+  }
+
+  /**
+   * Extracts text from an OOXML <si> or <is> container, supporting both plain <t>
+   * and rich-text <r><t> runs while ignoring phonetic guide <rPh> elements.
+   */
+  private fun extractRichTextContent(container: Element): String {
+    val sb = StringBuilder()
+    val children = container.childNodes
+    for (i in 0 until children.length) {
+      val child = children.item(i) as? Element ?: continue
+      when (child.tagName.substringAfterLast(':')) {
+        "t" -> sb.append(child.textContent.orEmpty())
+        "r" -> {
+          val runChildren = child.childNodes
+          for (j in 0 until runChildren.length) {
+            val rc = runChildren.item(j) as? Element ?: continue
+            if (rc.tagName.substringAfterLast(':') == "t") {
+              sb.append(rc.textContent.orEmpty())
+            }
+          }
+        }
+      }
+    }
+    return sb.toString()
   }
 
   private fun parseWorksheetRows(bytes: ByteArray, sharedStrings: List<String>): List<List<String>> {
@@ -432,22 +588,17 @@ object ExcelXlsxEngine {
           currentCol = cellRefToColIndex(ref)
         }
 
-        val rawText = buildString {
-          val descendants = cellEl.getElementsByTagName("*")
-          for (k in 0 until descendants.length) {
-            val d = descendants.item(k) as? Element ?: continue
-            val tag = d.tagName.substringAfterLast(':')
-            if (tag == "v" || tag == "t") {
-              append(d.textContent.orEmpty())
-            }
+        val value = when (cellType) {
+          "s" -> {
+            val idxText = extractDirectValueText(cellEl).trim()
+            val idx = idxText.toIntOrNull()
+            if (idx != null && idx in sharedStrings.indices) sharedStrings[idx] else ""
           }
-        }
-
-        val value = if (cellType == "s") {
-          val idx = rawText.trim().toIntOrNull()
-          if (idx != null && idx in sharedStrings.indices) sharedStrings[idx] else ""
-        } else {
-          rawText
+          "inlineStr" -> {
+            val isEl = findDirectChild(cellEl, "is")
+            if (isEl != null) extractRichTextContent(isEl) else extractDirectValueText(cellEl)
+          }
+          else -> extractDirectValueText(cellEl)
         }
         currentRow[currentCol] = value
         currentCol++
@@ -459,6 +610,28 @@ object ExcelXlsxEngine {
       }
     }
     return rows
+  }
+
+  private fun findDirectChild(parent: Element, localName: String): Element? {
+    val children = parent.childNodes
+    for (i in 0 until children.length) {
+      val el = children.item(i) as? Element ?: continue
+      if (el.tagName.substringAfterLast(':') == localName) return el
+    }
+    return null
+  }
+
+  private fun extractDirectValueText(cellEl: Element): String {
+    val sb = StringBuilder()
+    val children = cellEl.childNodes
+    for (i in 0 until children.length) {
+      val child = children.item(i) as? Element ?: continue
+      val tag = child.tagName.substringAfterLast(':')
+      if (tag == "v" || tag == "t") {
+        sb.append(child.textContent.orEmpty())
+      }
+    }
+    return sb.toString()
   }
 
   private fun cellRefToColIndex(ref: String): Int {
@@ -474,10 +647,32 @@ object ExcelXlsxEngine {
   }
 
   private fun parseXmlDocument(bytes: ByteArray): Document {
-    val factory = DocumentBuilderFactory.newInstance().apply {
-      isNamespaceAware = false
+    val factory = try {
+      DocumentBuilderFactory.newInstance().apply {
+        isNamespaceAware = false
+        isXIncludeAware = false
+        isExpandEntityReferences = false
+        setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+        setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+        setFeature("http://xml.org/sax/features/external-general-entities", false)
+        setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+        setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
+      }
+    } catch (e: ParserConfigurationException) {
+      throw SecurityException("Required XML security features are unsupported by the XML parser.", e)
+    } catch (e: IllegalArgumentException) {
+      throw SecurityException("Required XML security configuration is unsupported by the XML parser.", e)
     }
-    return factory.newDocumentBuilder().parse(bytes.inputStream())
+
+    return try {
+      val builder = factory.newDocumentBuilder()
+      builder.setEntityResolver { _, _ ->
+        throw SAXException("External XML entities are disallowed.")
+      }
+      builder.parse(bytes.inputStream())
+    } catch (e: SAXException) {
+      throw IllegalArgumentException("Malformed or disallowed XML content in workbook.", e)
+    }
   }
 
   private fun writeZipEntry(zip: ZipOutputStream, name: String, content: String) {
@@ -497,11 +692,16 @@ object ExcelXlsxEngine {
       cells.forEachIndexed { colIdx, value ->
         val cellRef = "${colIndexToLetters(colIdx)}$rNum"
         val styleAttr = if (rowIdx == 0) """ s="1"""" else ""
-        val numVal = value.toDoubleOrNull()
-        if (rowIdx > 0 && numVal != null && !value.startsWith("0") || (rowIdx > 0 && value == "0")) {
+        val numVal = if (rowIdx > 0 && canonicalNonNegativeNumberRegex.matches(value)) {
+          value.toDoubleOrNull()?.takeIf { it.isFinite() }
+        } else {
+          null
+        }
+        if (numVal != null) {
           sb.append("""<c r="$cellRef"$styleAttr><v>$value</v></c>""")
         } else {
-          val escaped = xmlEscape(value)
+          val safeText = if (rowIdx > 0) neutralizeFormulaInjection(value) else value
+          val escaped = xmlEscape(safeText)
           sb.append("""<c r="$cellRef" t="inlineStr"$styleAttr><is><t xml:space="preserve">$escaped</t></is></c>""")
         }
       }
@@ -509,6 +709,17 @@ object ExcelXlsxEngine {
     }
     sb.append("</sheetData></worksheet>")
     return sb.toString()
+  }
+
+  internal fun neutralizeFormulaInjection(value: String): String {
+    if (value.isEmpty()) return value
+    val first = value.first()
+    val trimmedFirst = value.trimStart().firstOrNull()
+    val isFormulaPrefix =
+      first == '=' || first == '+' || first == '-' || first == '@' ||
+        first == '\t' || first == '\r' ||
+        trimmedFirst == '=' || trimmedFirst == '+' || trimmedFirst == '-' || trimmedFirst == '@'
+    return if (isFormulaPrefix) "'$value" else value
   }
 
   private fun colIndexToLetters(index: Int): String {

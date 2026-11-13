@@ -359,7 +359,8 @@ class MainViewModelFactory(private val context: Context) : ViewModelProvider.Fac
       entryDao = db.dailyEntryDao(),
       cycleDao = db.cycleDao(),
       customOptionDao = db.customOptionDao(),
-      preferencesStore = prefs
+      preferencesStore = prefs,
+      database = db
     )
     return MainViewModel(repo) as T
   }

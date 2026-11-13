@@ -1,5 +1,6 @@
 package com.example.data
 
+import androidx.room.withTransaction
 import com.example.data.excel.ParsedWorkbookPreview
 import com.example.domain.analytics.CycleAnalyticsEngine
 import com.example.domain.model.CustomOption
@@ -11,6 +12,8 @@ import com.example.domain.model.UserProfile
 import com.example.util.CycleDate
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 enum class ImportMode {
   MERGE,
@@ -27,8 +30,11 @@ class BloomRepository(
   private val entryDao: DailyEntryDao,
   private val cycleDao: CycleDao,
   private val customOptionDao: CustomOptionDao,
-  private val preferencesStore: PreferencesStore
+  private val preferencesStore: PreferencesStore,
+  private val database: BloomDatabase? = null
 ) {
+  private val writeMutex = Mutex()
+
   val profileFlow: Flow<UserProfile?> = profileDao.observeProfile().map { it?.toDomain() }
   val entriesFlow: Flow<List<DailyEntry>> = entryDao.observeAllEntries().map { list ->
     list.map { it.toDomain() }
@@ -41,74 +47,97 @@ class BloomRepository(
   }
   val preferencesFlow: Flow<AppPreferences> = preferencesStore.preferencesFlow
 
+  private suspend fun <T> withDbTransaction(block: suspend () -> T): T {
+    val db = database
+    return if (db != null) db.withTransaction { block() } else block()
+  }
+
   suspend fun completeOnboarding(
     profile: UserProfile,
     pastCycles: List<PastCycleRange>,
     optionalPin: String?
   ) {
-    profileDao.upsertProfile(UserProfileEntity.fromDomain(profile))
-    if (pastCycles.isNotEmpty()) {
-      val initialEntries = mutableListOf<DailyEntryEntity>()
-      for (range in pastCycles) {
-        val start = minOf(range.startDate, range.endDate)
-        val end = maxOf(range.startDate, range.endDate)
-        val spanDays = start.daysUntil(end).coerceIn(0, 14)
-        for (offset in 0..spanDays) {
-          val date = start.plusDays(offset)
-          val flow = when {
-            offset == 0 -> FlowLevel.MEDIUM
-            offset == spanDays -> FlowLevel.LIGHT
-            else -> FlowLevel.MEDIUM
-          }
-          initialEntries.add(
-            DailyEntryEntity.fromDomain(
-              DailyEntry(
-                date = date,
-                isPeriod = true,
-                flowLevel = flow,
-                isPeriodStartOverride = offset == 0,
-                isPeriodEndOverride = offset == spanDays
+    writeMutex.withLock {
+      withDbTransaction {
+        profileDao.upsertProfile(UserProfileEntity.fromDomain(profile))
+        if (pastCycles.isNotEmpty()) {
+          val initialEntries = mutableListOf<DailyEntryEntity>()
+          for (range in pastCycles) {
+            val start = minOf(range.startDate, range.endDate)
+            val end = maxOf(range.startDate, range.endDate)
+            val spanDays = start.daysUntil(end).coerceIn(0, 14)
+            for (offset in 0..spanDays) {
+              val date = start.plusDays(offset)
+              val flow = when {
+                offset == 0 -> FlowLevel.MEDIUM
+                offset == spanDays -> FlowLevel.LIGHT
+                else -> FlowLevel.MEDIUM
+              }
+              initialEntries.add(
+                DailyEntryEntity.fromDomain(
+                  DailyEntry(
+                    date = date,
+                    isPeriod = true,
+                    flowLevel = flow,
+                    isPeriodStartOverride = offset == 0,
+                    isPeriodEndOverride = offset == spanDays
+                  )
+                )
               )
-            )
-          )
+            }
+          }
+          entryDao.upsertEntries(initialEntries)
         }
+        syncDerivedCyclesLocked()
       }
-      entryDao.upsertEntries(initialEntries)
+      if (!optionalPin.isNullOrBlank()) {
+        preferencesStore.setPin(optionalPin)
+      }
+      preferencesStore.setOnboardingCompleted(true)
     }
-    syncDerivedCycles()
-    if (!optionalPin.isNullOrBlank()) {
-      preferencesStore.setPin(optionalPin)
-    }
-    preferencesStore.setOnboardingCompleted(true)
   }
 
   suspend fun saveProfile(profile: UserProfile) {
-    profileDao.upsertProfile(UserProfileEntity.fromDomain(profile))
-    syncDerivedCycles()
+    writeMutex.withLock {
+      withDbTransaction {
+        profileDao.upsertProfile(UserProfileEntity.fromDomain(profile))
+        syncDerivedCyclesLocked()
+      }
+    }
   }
 
   suspend fun saveDailyEntry(entry: DailyEntry) {
-    if (!entry.hasAnyDetails) {
-      entryDao.deleteByDate(entry.date)
-    } else {
-      entryDao.upsertEntry(DailyEntryEntity.fromDomain(entry.copy(updatedAtMillis = System.currentTimeMillis())))
+    writeMutex.withLock {
+      withDbTransaction {
+        if (!entry.hasAnyDetails) {
+          entryDao.deleteByDate(entry.date)
+        } else {
+          entryDao.upsertEntry(DailyEntryEntity.fromDomain(entry.copy(updatedAtMillis = System.currentTimeMillis())))
+        }
+        syncDerivedCyclesLocked()
+      }
     }
-    syncDerivedCycles()
   }
 
   suspend fun addCustomOption(type: CustomOptionType, label: String) {
     val clean = label.trim()
     if (clean.isEmpty()) return
-    val existing = customOptionDao.getAllOptionsOnce()
-    if (existing.none { it.type == type && it.label.equals(clean, ignoreCase = true) }) {
-      customOptionDao.insertOption(
-        CustomOptionEntity.fromDomain(CustomOption(type = type, label = clean))
-      )
+    writeMutex.withLock {
+      withDbTransaction {
+        val existing = customOptionDao.getAllOptionsOnce()
+        if (existing.none { it.type == type && it.label.equals(clean, ignoreCase = true) }) {
+          customOptionDao.insertOption(
+            CustomOptionEntity.fromDomain(CustomOption(type = type, label = clean))
+          )
+        }
+      }
     }
   }
 
   suspend fun deleteCustomOption(id: Long) {
-    customOptionDao.deleteById(id)
+    writeMutex.withLock {
+      customOptionDao.deleteById(id)
+    }
   }
 
   suspend fun setShowFertileWindow(show: Boolean) {
@@ -128,38 +157,63 @@ class BloomRepository(
   }
 
   suspend fun applyWorkbookImport(preview: ParsedWorkbookPreview, mode: ImportMode) {
-    if (mode == ImportMode.REPLACE) {
-      entryDao.clearAllEntries()
-      customOptionDao.clearAllOptions()
-    }
-    if (preview.profile != null && (mode == ImportMode.REPLACE || profileDao.getProfileOnce() == null)) {
-      profileDao.upsertProfile(UserProfileEntity.fromDomain(preview.profile))
-      preferencesStore.setOnboardingCompleted(true)
-    }
-    if (preview.entries.isNotEmpty()) {
-      entryDao.upsertEntries(preview.entries.map { DailyEntryEntity.fromDomain(it) })
-    }
-    if (preview.discoveredCustomOptions.isNotEmpty()) {
-      val existing = customOptionDao.getAllOptionsOnce()
-      val newOnes = preview.discoveredCustomOptions.filter { candidate ->
-        existing.none { it.type == candidate.type && it.label.equals(candidate.label, ignoreCase = true) }
+    writeMutex.withLock {
+      var importedProfile = false
+      withDbTransaction {
+        if (mode == ImportMode.REPLACE) {
+          entryDao.clearAllEntries()
+          customOptionDao.clearAllOptions()
+        }
+        if (preview.profile != null && (mode == ImportMode.REPLACE || profileDao.getProfileOnce() == null)) {
+          profileDao.upsertProfile(UserProfileEntity.fromDomain(preview.profile))
+          importedProfile = true
+        }
+        if (preview.entries.isNotEmpty()) {
+          entryDao.upsertEntries(preview.entries.map { DailyEntryEntity.fromDomain(it) })
+        }
+        if (preview.discoveredCustomOptions.isNotEmpty()) {
+          val existing = customOptionDao.getAllOptionsOnce()
+          val seen = existing.map { it.type to it.label.trim().lowercase() }.toMutableSet()
+          val newOnes = mutableListOf<CustomOptionEntity>()
+          for (candidate in preview.discoveredCustomOptions) {
+            val clean = candidate.label.trim()
+            if (clean.isNotEmpty() && seen.add(candidate.type to clean.lowercase())) {
+              newOnes.add(CustomOptionEntity.fromDomain(candidate.copy(label = clean)))
+            }
+          }
+          if (newOnes.isNotEmpty()) {
+            customOptionDao.insertOptions(newOnes)
+          }
+        }
+        syncDerivedCyclesLocked()
       }
-      if (newOnes.isNotEmpty()) {
-        customOptionDao.insertOptions(newOnes.map { CustomOptionEntity.fromDomain(it) })
+      if (importedProfile) {
+        preferencesStore.setOnboardingCompleted(true)
       }
     }
-    syncDerivedCycles()
   }
 
   suspend fun clearAllLocalData() {
-    entryDao.clearAllEntries()
-    cycleDao.clearAllCycles()
-    customOptionDao.clearAllOptions()
-    profileDao.clearProfile()
-    preferencesStore.clearAllPreferences()
+    writeMutex.withLock {
+      withDbTransaction {
+        entryDao.clearAllEntries()
+        cycleDao.clearAllCycles()
+        customOptionDao.clearAllOptions()
+        profileDao.clearProfile()
+      }
+      preferencesStore.clearAllPreferences()
+    }
   }
 
   suspend fun syncDerivedCycles() {
+    writeMutex.withLock {
+      withDbTransaction {
+        syncDerivedCyclesLocked()
+      }
+    }
+  }
+
+  private suspend fun syncDerivedCyclesLocked() {
     val profile = profileDao.getProfileOnce()?.toDomain()
     val entries = entryDao.getAllEntriesOnce().map { it.toDomain() }
     val derived = CycleAnalyticsEngine.deriveCycles(entries, profile)
