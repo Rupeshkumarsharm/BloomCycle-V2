@@ -90,10 +90,7 @@ class BloomRepository(
         }
         syncDerivedCyclesLocked()
       }
-      if (!optionalPin.isNullOrBlank()) {
-        preferencesStore.setPin(optionalPin)
-      }
-      preferencesStore.setOnboardingCompleted(true)
+      preferencesStore.setOnboardingCompletedWithOptionalPin(optionalPin)
     }
   }
 
@@ -150,6 +147,28 @@ class BloomRepository(
 
   suspend fun setPin(pin: String) {
     preferencesStore.setPin(pin)
+  }
+
+  suspend fun upgradeLegacyPinHashAndClearFailures(newV2Hash: String) {
+    preferencesStore.upgradeLegacyPinHashAndClearFailures(newV2Hash)
+  }
+
+  suspend fun recordFailedPinAttempt(
+    failedAttempts: Int,
+    lockoutUntilEpochMs: Long,
+    lockoutSetEpochMs: Long,
+    lockoutDurationMs: Long
+  ) {
+    preferencesStore.recordFailedPinAttempt(
+      failedAttempts = failedAttempts,
+      lockoutUntilEpochMs = lockoutUntilEpochMs,
+      lockoutSetEpochMs = lockoutSetEpochMs,
+      lockoutDurationMs = lockoutDurationMs
+    )
+  }
+
+  suspend fun clearPinFailureState() {
+    preferencesStore.clearPinFailureState()
   }
 
   suspend fun disablePin() {

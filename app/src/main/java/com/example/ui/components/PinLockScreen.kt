@@ -25,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,21 +33,28 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.util.PinSecurity
 
 @Composable
 fun PinLockOverlay(
   userName: String?,
   errorMessage: String?,
+  lockoutRemainingSeconds: Int = 0,
+  isVerifyingPin: Boolean = false,
+  hasPendingBackupAction: Boolean = false,
   onPinSubmitted: (String) -> Unit,
   onClearError: () -> Unit
 ) {
   var pin by remember { mutableStateOf("") }
+  var showForgotPinDialog by remember { mutableStateOf(false) }
+  val inputLocked = isVerifyingPin || lockoutRemainingSeconds > 0
 
   Box(
     modifier = Modifier
@@ -92,7 +100,11 @@ fun PinLockOverlay(
         )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-          text = "Enter your 4-digit privacy PIN to unlock your local journal.",
+          text = if (hasPendingBackupAction) {
+            "Enter your 4-digit privacy PIN to continue your Excel backup action."
+          } else {
+            "Enter your 4-digit privacy PIN to unlock your local journal."
+          },
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           textAlign = TextAlign.Center
@@ -119,7 +131,8 @@ fun PinLockOverlay(
           text = errorMessage,
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.error,
-          textAlign = TextAlign.Center
+          textAlign = TextAlign.Center,
+          modifier = Modifier.testTag("pin_error_text")
         )
       } else {
         Spacer(modifier = Modifier.height(16.dp))
@@ -132,7 +145,10 @@ fun PinLockOverlay(
         listOf("", "0", "DEL")
       )
 
-      Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+      Column(
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.alpha(if (inputLocked) 0.5f else 1f)
+      ) {
         keys.forEach { row ->
           Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
             row.forEach { key ->
@@ -143,7 +159,7 @@ fun PinLockOverlay(
                     modifier = Modifier
                       .size(68.dp)
                       .clip(CircleShape)
-                      .clickable {
+                      .clickable(enabled = !inputLocked) {
                         if (pin.isNotEmpty()) {
                           pin = pin.dropLast(1)
                           onClearError()
@@ -167,7 +183,7 @@ fun PinLockOverlay(
                     modifier = Modifier
                       .size(68.dp)
                       .clip(CircleShape)
-                      .clickable {
+                      .clickable(enabled = !inputLocked) {
                         if (pin.length < 4) {
                           onClearError()
                           val next = pin + key
@@ -198,7 +214,32 @@ fun PinLockOverlay(
           }
         }
       }
+
+      TextButton(
+        onClick = { showForgotPinDialog = true },
+        modifier = Modifier.testTag("forgot_pin_btn")
+      ) {
+        Text("Forgot PIN?")
+      }
     }
+  }
+
+  if (showForgotPinDialog) {
+    AlertDialog(
+      onDismissRequest = { showForgotPinDialog = false },
+      title = { Text("Offline PIN Protection") },
+      text = {
+        Text(
+          "BloomCycle runs 100% offline with no cloud account or recovery backdoor. " +
+            "Your PIN cannot be recovered remotely. If you are locked out permanently, you can only reset the app from Android system settings (App Info > Clear storage), which erases local data on this device unless you previously exported an Excel (.xlsx) backup."
+        )
+      },
+      confirmButton = {
+        Button(onClick = { showForgotPinDialog = false }) {
+          Text("OK")
+        }
+      }
+    )
   }
 }
 
@@ -230,7 +271,11 @@ fun PinSetupDialog(
         modifier = Modifier.fillMaxWidth()
       ) {
         Text(
-          text = if (step == 1) "Choose a 4-digit PIN stored securely as a salted hash on your device." else "Re-enter the same 4 digits to confirm.",
+          text = if (step == 1) {
+            "Choose a 4-digit PIN stored securely as a salted PBKDF2 hash on your device."
+          } else {
+            "Re-enter the same 4 digits to confirm."
+          },
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           textAlign = TextAlign.Center
@@ -323,7 +368,7 @@ fun PinSetupDialog(
     confirmButton = {
       Button(
         onClick = {
-          if (firstPin.length == 4 && confirmPin == firstPin) {
+          if (PinSecurity.isValidPinFormat(firstPin) && confirmPin == firstPin) {
             onPinConfirmed(firstPin)
           } else {
             error = "PINs did not match. Please try again."

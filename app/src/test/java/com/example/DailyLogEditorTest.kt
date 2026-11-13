@@ -6,6 +6,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -16,7 +17,6 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.text.TextRange
@@ -33,13 +33,13 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [36], qualifiers = "w480dp-h2200dp")
 class DailyLogEditorTest {
 
   @get:Rule
   val composeRule = createComposeRule()
 
-  @Test
+  @Test(timeout = 30_000)
   fun `rapid typing debounces saves and ignores Room emissions over active draft`() {
     val date = CycleDate(2026, 10, 12)
     var existingEntry by mutableStateOf<DailyEntry?>(null)
@@ -63,7 +63,7 @@ class DailyLogEditorTest {
     composeRule.mainClock.advanceTimeBy(50L)
 
     val notesNode = composeRule.onNodeWithTag("daily_notes_input")
-    notesNode.performScrollTo().performClick()
+    notesNode.performClick()
     notesNode.performTextInput("Quick")
     composeRule.mainClock.advanceTimeBy(150L)
 
@@ -98,7 +98,7 @@ class DailyLogEditorTest {
     assertEquals("Quick draft", saved.single().notes)
   }
 
-  @Test
+  @Test(timeout = 30_000)
   fun `switching dates and leaving editor flush pending text writes for previous date`() {
     val day1 = CycleDate(2026, 10, 12)
     val day2 = CycleDate(2026, 10, 13)
@@ -126,30 +126,37 @@ class DailyLogEditorTest {
     composeRule.mainClock.advanceTimeBy(50L)
 
     val notesNode = composeRule.onNodeWithTag("daily_notes_input")
-    notesNode.performScrollTo().performClick()
+    notesNode.performClick()
     notesNode.performTextInput("Day 1 unsaved")
     composeRule.mainClock.advanceTimeBy(100L)
     assertEquals(0, saved.size)
 
     // Switch to Day 2 before debounce fires -> Day 1 pending draft must flush immediately
-    selectedDate = day2
-    composeRule.mainClock.advanceTimeBy(50L)
+    Snapshot.withMutableSnapshot {
+      selectedDate = day2
+    }
+    composeRule.mainClock.advanceTimeByFrame()
     composeRule.waitForIdle()
     assertTrue(saved.any { it.date == day1 && it.notes == "Day 1 unsaved" })
 
     // Type on Day 2 and leave editor immediately before debounce fires -> Day 2 must flush
-    composeRule.onNodeWithTag("daily_notes_input").performScrollTo().performClick()
-    composeRule.onNodeWithTag("daily_notes_input").performTextInput("Day 2 unsaved")
+    val day2NotesNode = composeRule.onNodeWithTag("daily_notes_input")
+    day2NotesNode.performClick()
+    day2NotesNode.performTextInput("Day 2 unsaved")
     composeRule.mainClock.advanceTimeBy(100L)
+    day2NotesNode.assertTextContains("Day 2 unsaved")
     assertEquals(1, saved.size)
 
-    showEditor = false
-    composeRule.mainClock.advanceTimeBy(50L)
+    Snapshot.withMutableSnapshot {
+      showEditor = false
+    }
+    composeRule.mainClock.advanceTimeByFrame()
     composeRule.waitForIdle()
-    assertTrue(saved.any { it.date == day2 && it.notes == "Day 2 unsaved" })
+    composeRule.onNodeWithTag("daily_notes_input").assertDoesNotExist()
+    assertTrue("Expected Day 2 flush in saved=$saved", saved.any { it.date == day2 && it.notes == "Day 2 unsaved" })
   }
 
-  @Test
+  @Test(timeout = 30_000)
   fun `exerciseMinutes validates digits and range without persisting invalid durations`() {
     val date = CycleDate(2026, 10, 14)
     val saved = mutableListOf<DailyEntry>()
@@ -171,11 +178,11 @@ class DailyLogEditorTest {
     }
     composeRule.mainClock.advanceTimeBy(50L)
 
-    composeRule.onNodeWithTag("more_details_toggle").performScrollTo().performClick()
+    composeRule.onNodeWithTag("more_details_toggle", useUnmergedTree = true).performClick()
     composeRule.mainClock.advanceTimeBy(500L)
 
     val exerciseInput = composeRule.onNodeWithTag("exercise_minutes_input")
-    exerciseInput.performScrollTo().performClick()
+    exerciseInput.performClick()
 
     // Over-range value (> 1440) must display validation message and NOT trigger saving 2000
     exerciseInput.performTextInput("2000")

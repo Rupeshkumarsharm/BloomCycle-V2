@@ -43,6 +43,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -73,9 +74,11 @@ import java.util.UUID
 @Composable
 fun OnboardingScreen(
   onCompleteOnboarding: (UserProfile, List<PastCycleRange>, String?) -> Unit,
-  onTriggerExcelRestore: () -> Unit
+  onTriggerExcelRestore: () -> Unit,
+  onStepChanged: (Int) -> Unit = {}
 ) {
   var step by remember { mutableIntStateOf(0) }
+  LaunchedEffect(step) { onStepChanged(step) }
   var name by remember { mutableStateOf("") }
   var dob by remember { mutableStateOf(CycleDate(1999, 5, 15)) }
   var relationshipStatus by remember { mutableStateOf(RelationshipStatus.PREFER_NOT_TO_SAY) }

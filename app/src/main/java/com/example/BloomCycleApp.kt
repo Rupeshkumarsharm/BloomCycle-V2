@@ -1,5 +1,9 @@
 package com.example
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -10,7 +14,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -29,7 +32,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -57,21 +64,50 @@ import com.example.ui.screens.OnboardingScreen
 import com.example.ui.screens.TodayDashboardScreen
 import com.example.ui.screens.YouSettingsScreen
 import com.example.ui.theme.BloomCycleTheme
+import com.example.ui.viewmodel.BloomUiState
 import com.example.ui.viewmodel.MainViewModel
 import com.example.util.CycleDate
 
 private const val XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+object ScreenSecurityPolicy {
+  fun isSensitiveScreen(uiState: BloomUiState, onboardingStep: Int): Boolean {
+    if (!uiState.isLoaded) return true
+    if (uiState.onboardingCompleted) return true
+    if (uiState.pendingImportPreview != null) return true
+    return onboardingStep >= 1
+  }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+  is Activity -> this
+  is ContextWrapper -> baseContext.findActivity()
+  else -> null
+}
+
 @Composable
 fun BloomCycleApp(viewModel: MainViewModel) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val context = LocalContext.current
+  var onboardingStep by remember { mutableIntStateOf(0) }
+
+  val isSensitive = ScreenSecurityPolicy.isSensitiveScreen(uiState, onboardingStep)
+  SideEffect {
+    val window = context.findActivity()?.window ?: return@SideEffect
+    if (isSensitive) {
+      window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    } else {
+      window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
+  }
 
   val exportLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.CreateDocument(XLSX_MIME)
   ) { uri ->
     if (uri != null) {
       viewModel.exportToExcelUri(context, uri)
+    } else {
+      viewModel.onSafPickerCancelled()
     }
   }
 
@@ -80,6 +116,8 @@ fun BloomCycleApp(viewModel: MainViewModel) {
   ) { uri ->
     if (uri != null) {
       viewModel.previewExcelImportUri(context, uri)
+    } else {
+      viewModel.onSafPickerCancelled()
     }
   }
 
@@ -95,6 +133,9 @@ fun BloomCycleApp(viewModel: MainViewModel) {
       PinLockOverlay(
         userName = uiState.profile?.name,
         errorMessage = uiState.pinError,
+        lockoutRemainingSeconds = uiState.pinLockoutRemainingSeconds,
+        isVerifyingPin = uiState.isVerifyingPin,
+        hasPendingBackupAction = uiState.hasPendingBackupActionAfterUnlock,
         onPinSubmitted = viewModel::unlockWithPin,
         onClearError = viewModel::clearPinError
       )
@@ -105,8 +146,10 @@ fun BloomCycleApp(viewModel: MainViewModel) {
       OnboardingScreen(
         onCompleteOnboarding = viewModel::completeOnboarding,
         onTriggerExcelRestore = {
+          viewModel.onLaunchingSafPicker()
           importLauncher.launch(arrayOf(XLSX_MIME, "application/octet-stream"))
-        }
+        },
+        onStepChanged = { onboardingStep = it }
       )
     } else {
       MainAuthenticatedShell(
@@ -114,9 +157,11 @@ fun BloomCycleApp(viewModel: MainViewModel) {
         viewModel = viewModel,
         onLaunchExport = {
           val filename = "BloomCycle_Backup_${CycleDate.today().toIsoString()}.xlsx"
+          viewModel.onLaunchingSafPicker()
           exportLauncher.launch(filename)
         },
         onLaunchImport = {
+          viewModel.onLaunchingSafPicker()
           importLauncher.launch(arrayOf(XLSX_MIME, "application/octet-stream"))
         }
       )
@@ -179,7 +224,7 @@ fun BloomCycleApp(viewModel: MainViewModel) {
 
 @Composable
 private fun MainAuthenticatedShell(
-  uiState: com.example.ui.viewmodel.BloomUiState,
+  uiState: BloomUiState,
   viewModel: MainViewModel,
   onLaunchExport: () -> Unit,
   onLaunchImport: () -> Unit
@@ -319,7 +364,7 @@ private fun MainAuthenticatedShell(
               onSelectThemeMode = viewModel::setDarkThemePreference,
               onSetPin = viewModel::setPin,
               onDisablePin = viewModel::disablePin,
-              onLockNow = viewModel::lockAppNow,
+              onLockNow = { viewModel.lockAppNow(fromLifecycleStop = false) },
               onExportExcel = onLaunchExport,
               onImportExcel = onLaunchImport,
               onAddCustomOption = viewModel::addCustomOption,

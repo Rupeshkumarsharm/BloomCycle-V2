@@ -37,10 +37,12 @@ class BloomCycleEngineTest {
 
   @Test
   fun `pin hashing and verification works with salt`() {
-    val salt = PinSecurity.generateSalt()
-    val hash = PinSecurity.hashPin("4829", salt)
-    assertTrue(PinSecurity.verifyPin("4829", salt, hash))
-    assertFalse(PinSecurity.verifyPin("0000", salt, hash))
+    val hash1 = PinSecurity.hashPin("4829")
+    val hash2 = PinSecurity.hashPin("4829")
+    assertTrue(hash1.startsWith("v2\$pbkdf2-hmac-sha256\$"))
+    assertFalse(hash1 == hash2) // Unique 16-byte random salt per derivation
+    assertTrue(PinSecurity.verifyPin("4829", hash1))
+    assertFalse(PinSecurity.verifyPin("0000", hash1))
   }
 
   @Test
